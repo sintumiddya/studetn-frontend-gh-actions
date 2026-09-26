@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-
   workflow_dispatch:
 
 jobs:
@@ -61,17 +60,16 @@ jobs:
             echo "Date: $(date)"
 
             APP_DIR="/var/www/frontend"
-            REPO_URL="https://github.com/${{ github.repository }}.git"
+            REPO_URL="https://github.com/sintumiddya/studetn-frontend-gh-actions.git"
             BRANCH="main"
 
-            echo "Frontend Server: 54.173.198.123"
             echo "Application Directory: $APP_DIR"
 
             # Create application directory
             sudo mkdir -p "$APP_DIR"
 
             # Give current user ownership
-            sudo chown -R $USER:$USER "$APP_DIR"
+            sudo chown -R "$USER:$USER" "$APP_DIR"
 
             # Clone or update repository
             if [ -d "$APP_DIR/.git" ]; then
@@ -112,7 +110,7 @@ jobs:
 
             echo "Build completed"
 
-            # Check build directory
+            # Check build
             if [ ! -f "$APP_DIR/dist/index.html" ]; then
               echo "ERROR: dist/index.html not found"
               exit 1
@@ -129,19 +127,41 @@ jobs:
 
             sudo nginx -t
 
-            # Reload Nginx
-            echo "Reloading Nginx..."
+            # Enable Nginx at boot
+            echo "Enabling Nginx..."
 
-            sudo systemctl reload nginx
+            sudo systemctl enable nginx
 
-            # Check Nginx status
-            if ! sudo systemctl is-active --quiet nginx; then
-              echo "ERROR: Nginx is not running"
-              sudo systemctl status nginx --no-pager
-              exit 1
+            # Start or restart Nginx
+            if sudo systemctl is-active --quiet nginx; then
+
+              echo "Nginx is already running"
+              echo "Reloading Nginx..."
+
+              sudo systemctl reload nginx
+
+            else
+
+              echo "Nginx is not running"
+              echo "Starting Nginx..."
+
+              sudo systemctl start nginx
+
             fi
 
-            echo "Nginx is running"
+            # Verify Nginx
+            if ! sudo systemctl is-active --quiet nginx; then
+
+              echo "ERROR: Nginx failed to start"
+
+              sudo systemctl status nginx --no-pager
+              sudo journalctl -u nginx --no-pager -n 50
+
+              exit 1
+
+            fi
+
+            echo "Nginx is running successfully"
 
             # Frontend health check
             sleep 2
@@ -151,10 +171,16 @@ jobs:
             echo "Frontend HTTP Status: $HTTP_STATUS"
 
             if [ "$HTTP_STATUS" != "200" ]; then
-              echo "WARNING: Frontend returned HTTP $HTTP_STATUS"
-            else
-              echo "Frontend health check successful"
+
+              echo "ERROR: Frontend returned HTTP $HTTP_STATUS"
+
+              sudo systemctl status nginx --no-pager
+
+              exit 1
+
             fi
+
+            echo "Frontend health check successful"
 
             # Backend health check
             BACKEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/api/health || true)
@@ -162,9 +188,13 @@ jobs:
             echo "Backend HTTP Status: $BACKEND_STATUS"
 
             if [ "$BACKEND_STATUS" = "200" ]; then
+
               echo "Backend health check successful"
+
             else
+
               echo "WARNING: Backend returned HTTP $BACKEND_STATUS"
+
             fi
 
             echo "======================================"
