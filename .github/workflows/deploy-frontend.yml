@@ -1,68 +1,174 @@
-yaml
 name: Deploy Frontend to AWS EC2
 
 on:
   push:
     branches:
       - main
+
   workflow_dispatch:
 
 jobs:
   build-check:
-    name: Build check
+    name: Build Check
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: 'npm'
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run build
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Lint
+        run: npm run lint
+
+      - name: Build Frontend
+        run: npm run build
         env:
           VITE_API_URL: /api
 
   deploy:
-    name: Deploy to EC2
+    name: Deploy Frontend to EC2
     runs-on: ubuntu-latest
     needs: build-check
+
     if: github.ref == 'refs/heads/main'
+
     steps:
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1
+
         with:
           host: ${{ secrets.FRONTEND_EC2_HOST }}
           username: ${{ secrets.FRONTEND_EC2_USERNAME }}
           key: ${{ secrets.FRONTEND_EC2_SSH_KEY }}
           port: 22
           command_timeout: 10m
+
           script: |
             set -e
-            echo "DEPLOYMENT STARTED: $(date)"
+
+            echo "======================================"
+            echo "FRONTEND DEPLOYMENT STARTED"
+            echo "======================================"
+
+            echo "Date: $(date)"
 
             APP_DIR="/var/www/frontend"
             REPO_URL="https://github.com/${{ github.repository }}.git"
             BRANCH="main"
 
-            mkdir -p "$APP_DIR"
+            echo "Frontend Server: 54.173.198.123"
+            echo "Application Directory: $APP_DIR"
 
+            # Create application directory
+            sudo mkdir -p "$APP_DIR"
+
+            # Give current user ownership
+            sudo chown -R $USER:$USER "$APP_DIR"
+
+            # Clone or update repository
             if [ -d "$APP_DIR/.git" ]; then
+
+              echo "Existing repository found"
+
               cd "$APP_DIR"
+
               git fetch origin "$BRANCH"
+
               git reset --hard "origin/$BRANCH"
+
               git clean -fd
+
             else
-              find "$APP_DIR" -mindepth 1 -delete
-              git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$APP_DIR"
+
+              echo "Repository not found. Cloning..."
+
+              sudo find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} \;
+
+              git clone \
+                --branch "$BRANCH" \
+                --single-branch \
+                "$REPO_URL" \
+                "$APP_DIR"
+
               cd "$APP_DIR"
+
             fi
 
+            echo "Installing dependencies..."
+
             npm ci
+
+            echo "Building React frontend..."
+
             VITE_API_URL=/api npm run build
 
-            sleep 2
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/health || echo "000")
-            echo "Health check: HTTP $HTTP_STATUS"
+            echo "Build completed"
 
-            echo "DEPLOYMENT FINISHED: $(date)"
+            # Check build directory
+            if [ ! -f "$APP_DIR/dist/index.html" ]; then
+              echo "ERROR: dist/index.html not found"
+              exit 1
+            fi
+
+            echo "Frontend build verified"
+
+            # Fix permissions
+            sudo chown -R www-data:www-data "$APP_DIR/dist"
+            sudo chmod -R 755 "$APP_DIR/dist"
+
+            # Test Nginx configuration
+            echo "Testing Nginx configuration..."
+
+            sudo nginx -t
+
+            # Reload Nginx
+            echo "Reloading Nginx..."
+
+            sudo systemctl reload nginx
+
+            # Check Nginx status
+            if ! sudo systemctl is-active --quiet nginx; then
+              echo "ERROR: Nginx is not running"
+              sudo systemctl status nginx --no-pager
+              exit 1
+            fi
+
+            echo "Nginx is running"
+
+            # Frontend health check
+            sleep 2
+
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/ || true)
+
+            echo "Frontend HTTP Status: $HTTP_STATUS"
+
+            if [ "$HTTP_STATUS" != "200" ]; then
+              echo "WARNING: Frontend returned HTTP $HTTP_STATUS"
+            else
+              echo "Frontend health check successful"
+            fi
+
+            # Backend health check
+            BACKEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/api/health || true)
+
+            echo "Backend HTTP Status: $BACKEND_STATUS"
+
+            if [ "$BACKEND_STATUS" = "200" ]; then
+              echo "Backend health check successful"
+            else
+              echo "WARNING: Backend returned HTTP $BACKEND_STATUS"
+            fi
+
+            echo "======================================"
+            echo "FRONTEND DEPLOYMENT FINISHED"
+            echo "======================================"
+
+            echo "Date: $(date)"
